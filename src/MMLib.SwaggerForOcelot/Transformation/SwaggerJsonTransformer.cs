@@ -1,4 +1,5 @@
 ﻿using Kros.IO;
+using Microsoft.Extensions.Options;
 using MMLib.SwaggerForOcelot.Configuration;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -15,10 +16,12 @@ namespace MMLib.SwaggerForOcelot.Transformation
     public class SwaggerJsonTransformer : ISwaggerJsonTransformer
     {
         private readonly OcelotSwaggerGenOptions _ocelotSwaggerGenOptions;
+        private readonly IOptionsMonitor<List<RouteOptions>> _routes;
 
-        public SwaggerJsonTransformer(OcelotSwaggerGenOptions ocelotSwaggerGenOptions)
+        public SwaggerJsonTransformer(OcelotSwaggerGenOptions ocelotSwaggerGenOptions, IOptionsMonitor<List<RouteOptions>> routes)
         {
             _ocelotSwaggerGenOptions = ocelotSwaggerGenOptions;
+            _routes = routes;
         }
 
         /// <inheritdoc/>
@@ -31,12 +34,12 @@ namespace MMLib.SwaggerForOcelot.Transformation
 
             if (swagger.ContainsKey("swagger"))
             {
-                return TransformSwagger(swagger, routes, serverOverride, endPointOptions);
+                return TransformSwagger(swagger, routes, serverOverride, endPointOptions, _routes);
             }
 
             if (swagger.ContainsKey("openapi"))
             {
-                return TransformOpenApi(swagger, routes, serverOverride, endPointOptions);
+                return TransformOpenApi(swagger, routes, serverOverride, endPointOptions, _routes);
             }
 
             throw new InvalidOperationException("Unknown swagger/openapi version");
@@ -46,7 +49,7 @@ namespace MMLib.SwaggerForOcelot.Transformation
             JObject swagger,
             IEnumerable<RouteOptions> routes,
             string hostOverride,
-            SwaggerEndPointOptions endPointOptions)
+            SwaggerEndPointOptions endPointOptions, IOptionsMonitor<List<RouteOptions>> allRoutes)
         {
             JToken paths = swagger[SwaggerProperties.Paths];
             string basePath = swagger.ContainsKey(SwaggerProperties.BasePath)
@@ -62,7 +65,7 @@ namespace MMLib.SwaggerForOcelot.Transformation
 
             if (paths != null)
             {
-                RenameAndRemovePaths(routes, paths, basePath);
+                RenameAndRemovePaths(routes, paths, basePath, allRoutes);
 
                 if (endPointOptions.RemoveUnusedComponentsFromScheme)
                 {
@@ -96,7 +99,7 @@ namespace MMLib.SwaggerForOcelot.Transformation
             JObject openApi,
             IEnumerable<RouteOptions> routes,
             string serverOverride,
-            SwaggerEndPointOptions endPointOptions)
+            SwaggerEndPointOptions endPointOptions, IOptionsMonitor<List<RouteOptions>> allRoutes)
         {
             // NOTE: Only supporting one server for now.
             string downstreamBasePath = "";
@@ -112,7 +115,7 @@ namespace MMLib.SwaggerForOcelot.Transformation
             JToken paths = openApi[OpenApiProperties.Paths];
             if (paths != null)
             {
-                RenameAndRemovePaths(routes, paths, downstreamBasePath);
+                RenameAndRemovePaths(routes, paths, downstreamBasePath, allRoutes);
 
                 JToken schemaToken = openApi[OpenApiProperties.Components][OpenApiProperties.Schemas];
                 if (endPointOptions.RemoveUnusedComponentsFromScheme && schemaToken != null)
@@ -142,7 +145,7 @@ namespace MMLib.SwaggerForOcelot.Transformation
             return openApi.ToString(Formatting.Indented);
         }
 
-        private void RenameAndRemovePaths(IEnumerable<RouteOptions> routes, JToken paths, string basePath)
+        private void RenameAndRemovePaths(IEnumerable<RouteOptions> routes, JToken paths, string basePath, IOptionsMonitor<List<RouteOptions>> allRoutes)
         {
             var forRemove = new List<JProperty>();
 
@@ -156,7 +159,7 @@ namespace MMLib.SwaggerForOcelot.Transformation
                 {
                     AddSecurityDefinitions(path, route);
 
-                    RenameToken(path, ConvertDownstreamPathToUpstreamPath(downstreamPath, route.DownstreamPath, route.UpstreamPath, basePath));
+                    RenameToken(path, ConvertDownstreamPathToUpstreamPath(downstreamPath, route.DownstreamPath, route.UpstreamPath, basePath, allRoutes));
                 }
                 else
                 {
@@ -291,12 +294,14 @@ namespace MMLib.SwaggerForOcelot.Transformation
             swagger.Remove(SwaggerProperties.Schemes);
         }
 
-        private static string ConvertDownstreamPathToUpstreamPath(string downstreamPath, string downstreamPattern, string upstreamPattern, string downstreamBasePath)
+        private static string ConvertDownstreamPathToUpstreamPath(string downstreamPath, string downstreamPattern, string upstreamPattern, string downstreamBasePath, IOptionsMonitor<List<RouteOptions>> allRoutes)
         {
             if (downstreamBasePath.Length > 0)
             {
                 downstreamPath = PathHelper.BuildPath(downstreamBasePath, downstreamPath);
             }
+
+            List<RouteOptions> route = allRoutes.Get(downstreamPath);
 
             int pos = downstreamPath.IndexOf(downstreamPattern, StringComparison.CurrentCultureIgnoreCase);
             if (pos < 0)
